@@ -63,6 +63,7 @@ enum hf_type {
     HF32_ADDL, // x += x << const5
     HF32_SUBL, // x -= x << const5
     HF32_XROT2,// x ^= (x <<< aConst5) ^ (x <<< bConst5)
+    HF32_XQO,// x ^= x * x | 1
     /* 64 bits */
     HF64_XOR,
 #ifdef HAVE_CLMUL
@@ -80,7 +81,8 @@ enum hf_type {
     HF64_XORR,
     HF64_ADDL,
     HF64_SUBL,
-    HF64_XROT2
+    HF64_XROT2,
+    HF64_XQO
 };
 
 static const char hf_names[][8] = {
@@ -104,6 +106,7 @@ static const char hf_names[][8] = {
     [HF32_ADDL] = "32addl",
     [HF32_SUBL] = "32subl",
     [HF32_XROT2]= "32xrot2",
+    [HF32_XQO]= "32xqo",
     [HF64_XOR]  = "64xor",
 #ifdef HAVE_CLMUL
     [HF64_CLMUL]= "64clmul",
@@ -120,7 +123,8 @@ static const char hf_names[][8] = {
     [HF64_XORR] = "64xorr",
     [HF64_ADDL] = "64addl",
     [HF64_SUBL] = "64subl",
-    [HF64_XROT2]= "64xrot2"
+    [HF64_XROT2]= "64xrot2",
+    [HF64_XQO]= "64xqo"
 };
 
 #define FOP_LOCKED  (1 << 0)
@@ -145,6 +149,8 @@ hf_randomize(struct hf_op *op, uint64_t s[2])
         case HF64_NOT:
         case HF32_BSWAP:
         case HF64_BSWAP:
+        case HF32_XQO:
+        case HF64_XQO:
             op->constant0 = 0;
             break;
 #ifdef HAVE_SHF
@@ -282,11 +288,13 @@ hf_type_valid(enum hf_type a, enum hf_type b)
         case HF32_ADDL:
         case HF32_SUBL:
         case HF32_XROT2:
+        case HF32_XQO:
         case HF64_XORL:
         case HF64_XORR:
         case HF64_ADDL:
         case HF64_SUBL:
         case HF64_XROT2:
+        case HF64_XQO:
             return 1;
     }
     abort();
@@ -328,6 +336,10 @@ hf_print(const struct hf_op *op, char *buf)
             break;
         case HF64_BSWAP:
             sprintf(buf, "x  = __builtin_bswap64(x);");
+            break;
+        case HF32_XQO:
+        case HF64_XQO:
+            sprintf(buf, "x ^= x * x | 1;");
             break;
 #ifdef HAVE_SHF
         case HF32_SHF:
@@ -414,7 +426,7 @@ hf_print(const struct hf_op *op, char *buf)
 static void
 hf_printfunc(const struct hf_op *ops, int n, FILE *f)
 {
-    if (ops[0].type <= HF32_SUBL)
+    if (ops[0].type <= HF32_XQO)
         fprintf(f, "uint32_t\nhash(uint32_t x)\n{\n");
     else
         fprintf(f, "uint64_t\nhash(uint64_t x)\n{\n");
@@ -429,7 +441,7 @@ hf_printfunc(const struct hf_op *ops, int n, FILE *f)
 static unsigned char *
 hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
 {
-    if (ops[0].type <= HF32_SUBL) {
+    if (ops[0].type <= HF32_XQO) {
         /* mov eax, edi*/
         *buf++ = 0x89;
         *buf++ = 0xf8;
@@ -626,6 +638,22 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 *buf++ = 0xc7;
                 *buf++ = (32 + ops[i].constant1 - ops[i].constant0) % 32;
                 /* xor eax, edi */
+                *buf++ = 0x31;
+                *buf++ = 0xf8;
+                break;
+            case HF32_XQO:
+                /* mov rdi, rax */ //89 f8 0f af c7 83 c8 01 31 f8
+                *buf++ = 0x89;
+                *buf++ = 0xf8;
+                /* imul rdi, rdi */
+                *buf++ = 0x0f;
+                *buf++ = 0xaf;
+                *buf++ = 0xc7;
+                /* xor rax, rdi */
+                *buf++ = 0x83;
+                *buf++ = 0xc8;
+                *buf++ = 0x01;
+                /* rol rdi, imm8 */
                 *buf++ = 0x31;
                 *buf++ = 0xf8;
                 break;
@@ -859,6 +887,26 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 *buf++ = 0xc7;
                 *buf++ = (32 + ops[i].constant1 - ops[i].constant0) % 32;
                 /* xor rax, rdi */
+                *buf++ = 0x48;
+                *buf++ = 0x31;
+                *buf++ = 0xf8;
+                break;
+            case HF64_XQO:
+                /* mov rdi, rax */ //89 f8 0f af c7 83 c8 01 31 f8
+                *buf++ = 0x48;
+                *buf++ = 0x89;
+                *buf++ = 0xc7;
+                /* imul rdi, rdi */
+                *buf++ = 0x48;
+                *buf++ = 0x0f;
+                *buf++ = 0xaf;
+                *buf++ = 0xf8;
+                /* xor rax, rdi */
+                *buf++ = 0x48;
+                *buf++ = 0x83;
+                *buf++ = 0xcf;
+                *buf++ = 0x01;
+                /* rol rdi, imm8 */
                 *buf++ = 0x48;
                 *buf++ = 0x31;
                 *buf++ = 0xf8;
