@@ -63,6 +63,7 @@ enum hf_type {
     HF32_ADDL, // x += x << const5
     HF32_SUBL, // x -= x << const5
     HF32_XROT2,// x ^= (x <<< aConst5) ^ (x <<< bConst5)
+    HF32_QOA,  // x += (x * x) | const32 (odd)
     /* 64 bits */
     HF64_XOR,
 #ifdef HAVE_CLMUL
@@ -104,6 +105,7 @@ static const char hf_names[][8] = {
     [HF32_ADDL] = "32addl",
     [HF32_SUBL] = "32subl",
     [HF32_XROT2]= "32xrot2",
+    [HF32_QOA]  = "32qoa",
     [HF64_XOR]  = "64xor",
 #ifdef HAVE_CLMUL
     [HF64_CLMUL]= "64clmul",
@@ -187,6 +189,9 @@ hf_randomize(struct hf_op *op, uint64_t s[2])
 #endif
         case HF32_MUL:
             op->constant0 = (uint32_t)r | 1;
+            break;
+        case HF32_QOA:
+            op->constant0 = (uint16_t)r | 1;
             break;
         case HF32_ROT:
         case HF32_XORL:
@@ -282,6 +287,7 @@ hf_type_valid(enum hf_type a, enum hf_type b)
         case HF32_ADDL:
         case HF32_SUBL:
         case HF32_XROT2:
+        case HF32_QOA:
         case HF64_XORL:
         case HF64_XORR:
         case HF64_ADDL:
@@ -371,6 +377,9 @@ hf_print(const struct hf_op *op, char *buf)
         case HF32_XROT2:
             sprintf(buf, "x ^= ((x << %llu) | (x >> %lld)) ^ ((x << %llu) | (x >> %lld));", c, 32 - c, d , 32 - d);
             break;
+        case HF32_QOA:
+            sprintf(buf, "x += (x * x) | 0x%08llx;", c & 0xFFFF);
+            break;
 #ifdef HAVE_SHF
         case HF64_SHF:
             sprintf(buf, "x = _mm_cvtsi128_si64(_mm_shuffle_epi8(_mm_cvtsi64_si128(x), _mm_cvtsi64_si128(0x%016llx)));", c);
@@ -414,7 +423,7 @@ hf_print(const struct hf_op *op, char *buf)
 static void
 hf_printfunc(const struct hf_op *ops, int n, FILE *f)
 {
-    if (ops[0].type <= HF32_SUBL)
+    if (ops[0].type <= HF32_QOA)
         fprintf(f, "uint32_t\nhash(uint32_t x)\n{\n");
     else
         fprintf(f, "uint64_t\nhash(uint64_t x)\n{\n");
@@ -429,7 +438,7 @@ hf_printfunc(const struct hf_op *ops, int n, FILE *f)
 static unsigned char *
 hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
 {
-    if (ops[0].type <= HF32_SUBL) {
+    if (ops[0].type <= HF32_QOA) {
         /* mov eax, edi*/
         *buf++ = 0x89;
         *buf++ = 0xf8;
@@ -627,6 +636,24 @@ hf_compile(const struct hf_op *ops, int n, unsigned char *buf)
                 *buf++ = (32 + ops[i].constant1 - ops[i].constant0) % 32;
                 /* xor eax, edi */
                 *buf++ = 0x31;
+                *buf++ = 0xf8;
+                break;
+            case HF32_QOA:
+                /* mov edi, eax */
+                *buf++ = 0x89;
+                *buf++ = 0xc7;
+                /* imul eax, eax*/
+                *buf++ = 0x0f;
+                *buf++ = 0xaf;
+                *buf++ = 0xc0;
+                /* or eax, imm32 */
+                *buf++ = 0x0d;
+                *buf++ = ops[i].constant0 >>  0;
+                *buf++ = ops[i].constant0 >>  8;
+                *buf++ = 0;//ops[i].constant0 >> 16;
+                *buf++ = 0;//ops[i].constant0 >> 24;
+                /* add eax, edi */
+                *buf++ = 0x01;
                 *buf++ = 0xf8;
                 break;
             case HF64_NOT:
@@ -1085,6 +1112,7 @@ parse_operand(struct hf_op *op, char *buf)
 #endif
         case HF32_MUL:
         case HF32_ADD:
+        case HF32_QOA:
         case HF64_XOR:
 #ifdef HAVE_CLMUL
         case HF64_CLMUL:
